@@ -1,63 +1,61 @@
 package com.example.cross_platform_vpn
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
+import android.os.Handler
 import android.os.Build
+import android.os.Bundle
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.EventChannel
 
 class MainActivity : FlutterActivity() {
 
-    private val CHANNEL = "com.vulcain.vpn/control"
+    private val CONTROL_CHANNEL = "com.vulcain.vpn/control"
+    private val STATUS_CHANNEL = "com.vulcain.vpn/status"
+
     private val VPN_REQUEST_CODE = 1001
+    private val NOTIFICATION_REQUEST_CODE = 1002
     private val TAG = "MainActivity"
 
     private var pendingResult: MethodChannel.Result? = null
 
-    // ❌ DELETE THIS ENTIRE onCreate METHOD - it's now in VpnApplication
-    // override fun onCreate(savedInstanceState: Bundle?) {
-    //     super.onCreate(savedInstanceState)
-    //     Seq.setContext(applicationContext)
-    //     Log.d(TAG, "Gomobile initialized")
-    // }
+    companion object {
+        var statusSink: EventChannel.EventSink? = null
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        // MethodChannel
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            CHANNEL
+            CONTROL_CHANNEL
         ).setMethodCallHandler { call, result ->
 
-            Log.d(TAG, "Method call: ${call.method}")
-
             when (call.method) {
+
                 "startVpn" -> {
-                    if (pendingResult != null) {
-                        result.error(
-                            "VPN_BUSY",
-                            "VPN permission request already in progress",
-                            null
-                        )
-                        return@setMethodCallHandler
-                    }
-
                     pendingResult = result
-                    val intent = VpnService.prepare(this)
 
-                    if (intent != null) {
-                        Log.d(TAG, "Requesting VPN permission")
-                        startActivityForResult(intent, VPN_REQUEST_CODE)
-                    } else {
-                        Log.d(TAG, "VPN permission already granted")
-                        pendingResult?.let { r ->
-                            startVpnInternal(r)
-                            pendingResult = null
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                            != PackageManager.PERMISSION_GRANTED) {
+
+                            requestPermissions(
+                                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                                NOTIFICATION_REQUEST_CODE
+                            )
+                            return@setMethodCallHandler
                         }
                     }
+
+                    requestVpnPermission()
                 }
 
                 "stopVpn" -> {
@@ -71,12 +69,38 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // EventChannel
+        EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            STATUS_CHANNEL
+        ).setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                statusSink = events
+            }
+
+            override fun onCancel(arguments: Any?) {
+                statusSink = null
+            }
+        })
+    }
+
+    private fun requestVpnPermission() {
+        val intent = VpnService.prepare(this)
+
+        if (intent != null) {
+            startActivityForResult(intent, VPN_REQUEST_CODE)
+        } else {
+            pendingResult?.let {
+                startVpnInternal(it)
+                pendingResult = null
+            }
+        }
     }
 
     private fun startVpnInternal(result: MethodChannel.Result) {
         try {
             val intent = Intent(this, MyVpnService::class.java)
-            Log.d(TAG, "Starting VPN service")
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
@@ -87,56 +111,70 @@ class MainActivity : FlutterActivity() {
             result.success(true)
 
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start VPN", e)
-            result.error(
-                "VPN_START_ERROR",
-                e.message ?: "Unknown error",
-                null
-            )
+            result.error("VPN_START_ERROR", e.message, null)
         }
     }
 
     private fun stopVpnInternal(result: MethodChannel.Result) {
         try {
-            Log.d(TAG, "Stopping VPN service")
             val intent = Intent(this, MyVpnService::class.java).apply {
                 action = "STOP_VPN"
             }
             startService(intent)
             result.success(true)
-
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to stop VPN", e)
-            result.error(
-                "VPN_STOP_ERROR",
-                e.message ?: "Unknown error",
-                null
-            )
+            result.error("VPN_STOP_ERROR", e.message, null)
         }
     }
 
-    override fun onActivityResult(
-        requestCode: Int,
-        resultCode: Int,
-        data: Intent?
-    ) {
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
 
         if (requestCode == VPN_REQUEST_CODE) {
             pendingResult?.let { result ->
-                pendingResult = null
 
                 if (resultCode == Activity.RESULT_OK) {
-                    Log.d(TAG, "VPN permission granted")
-                    startVpnInternal(result)
+
+                    // Small UI-cycle delay (prevents first-run freeze)
+                    Handler(mainLooper).post {
+                        startVpnInternal(result)
+                        pendingResult = null
+                    }
+
                 } else {
-                    Log.w(TAG, "VPN permission denied")
                     result.error(
                         "VPN_PERMISSION_DENIED",
                         "User denied VPN permission",
                         null
                     )
+                    pendingResult = null
                 }
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == NOTIFICATION_REQUEST_CODE) {
+
+            if (grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+
+                // Continue with VPN permission
+                requestVpnPermission()
+
+            } else {
+                pendingResult?.error(
+                    "NOTIFICATION_PERMISSION_DENIED",
+                    "Notification permission is required",
+                    null
+                )
+                pendingResult = null
             }
         }
     }

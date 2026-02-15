@@ -1,29 +1,24 @@
 import 'package:flutter/services.dart';
 
 class VpnService {
-  static const MethodChannel _platform = MethodChannel('com.vulcain.vpn/control');
+  static const MethodChannel _platform =
+      MethodChannel('com.vulcain.vpn/control');
+
+  static const EventChannel _statusChannel =
+      EventChannel('com.vulcain.vpn/status');
+
+  static Stream<bool> get statusStream =>
+      _statusChannel.receiveBroadcastStream().map((event) => event as bool);
 
   static Future<bool> startVpn() async {
-    try {
-      return await _platform.invokeMethod('startVpn');
-    } on PlatformException catch (e) {
-      throw Exception("Failed to start VPN: ${e.message}");
-    }
+    return await _platform.invokeMethod('startVpn');
   }
 
   static Future<bool> stopVpn() async {
-    try {
-      return await _platform.invokeMethod('stopVpn');
-    } on PlatformException catch (e) {
-      throw Exception("Failed to stop VPN: ${e.message}");
-    }
+    return await _platform.invokeMethod('stopVpn');
   }
 
   static Future<bool> getStatus() async {
-    try {
-      return await _platform.invokeMethod('getStatus');
-    } on PlatformException catch (e) {
-      throw Exception("Failed to get VPN status: ${e.message}");
-    }
+    return await _platform.invokeMethod('getStatus');
   }
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'colors.dart';
 import 'dart:async';
 import 'l10n/app_localizations.dart';
@@ -69,11 +70,36 @@ class _VpnHomePageState extends State<VpnHomePage> {
   Timer? _ipCheckTimer;
   String _currentIp = '';
   bool _isLoadingIp = true;
+  StreamSubscription<bool>? _vpnSubscription;
 
   @override
   void initState() {
     super.initState();
     _fetchCurrentIp();
+
+    _vpnSubscription = VpnService.statusStream.listen((isConnected) {
+      if (!mounted) return;
+
+      setState(() {
+        if (isConnected) {
+          _connectionState = 'connected';
+          _connectionSeconds = 0;
+
+          _timer?.cancel();
+          _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+            setState(() {
+              _connectionSeconds++;
+            });
+          });
+        } else {
+          _connectionState = 'disconnected';
+          _connectionSeconds = 0;
+          _timer?.cancel();
+        }
+      });
+
+      _fetchCurrentIp();
+    });
   }
 
   Future<void> _fetchCurrentIp() async {
@@ -106,6 +132,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
   void dispose() {
     _timer?.cancel();
     _ipCheckTimer?.cancel();
+    _vpnSubscription?.cancel();
     super.dispose();
   }
 
@@ -184,6 +211,40 @@ class _VpnHomePageState extends State<VpnHomePage> {
 
       _fetchCurrentIp();
     }
+  }
+
+  Future<void> _showEnableNotificationsDialog() async {
+    return showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Notifications Required"),
+        content: const Text("Please enable notifications in settings to use the VPN."),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              const String url = 'android.settings.APP_NOTIFICATION_SETTINGS';
+              try {
+                if (await canLaunchUrl(Uri.parse(url))) {
+                  await launchUrl(Uri.parse(url));
+                } else {
+                  throw 'Could not launch $url';
+                }
+              } catch (e) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Could not open settings: $e')),
+                );
+              }
+            },
+            child: const Text("Open Settings"),
+          ),
+        ],
+      ),
+    );
   }
 
   String _formatTime(int seconds) {
